@@ -27,11 +27,10 @@ dir_output_table <- file.path("/Users","kbg","Documents","UC_Berkeley","CyanoMet
 ################################################################################
 
 
+#### READ IN DATA #############################################################
 
-# Whole alignment FASTA
+## WHOLE ALIGNMENT FASTA FROM SNIPPY
 alg <- read.alignment(file.path(dir_input_snippy, "core.full.aln.LO"), format= "fasta")
-#alg <- read.fasta(file.path(dir_input, "core.full.aln.LO"), forceDNAtolower = FALSE)
-
 
 
 ## GFF FILE
@@ -50,17 +49,17 @@ gff <- read.delim(file.path(dir_input_annotations, "Reference_ggkbase.gff"), hea
          start= as.numeric(start),
          end= as.numeric(end))
 
-
-
-## Calculate the fraction of gaps in each gene for each genome
+## CALCULATE THE FRACTION OF GAPS IN EACH GENE FOR EACH GENOME ##############S##
 ## Takes 3-4 hours to run
 
+gap_calcs <- function(){
 ## Initialize empty data frame for gene gap information
  gene.info <- data.frame(matrix(NA, nrow= length(alg$seq)*nrow(gff), ncol= 8)) %>%
                 rename(genome= X1, gene= X2, length= X3, gaps= X4, gap_fraction= X5, Ns= X6, N_fraction= X7, prop_valid_sites= X8) %>%
                as_tibble()
  counter <- 1
  
+ ## Run loop
  for(genome in seq(1:length(alg$seq))){
    svMisc::progress(genome, max.value= length(alg$seq), progress.bar = TRUE)
 
@@ -90,9 +89,10 @@ gff <- read.delim(file.path(dir_input_annotations, "Reference_ggkbase.gff"), hea
    }
    write_tsv(gene.info, file.path(dir_output_snippy, "gene_gaps_Ns_ggkbase.tsv"), col_names= TRUE, append= FALSE)
 }
+}
 
-
-
+#gene_gaps <- gap_calcs
+#### FILTER GENES ####################################################################
 
 #### Filter genes to only ones that have good coverage from all genomes in a species
 
@@ -152,12 +152,9 @@ gff.subset <- gff %>%
   filter(gene_length > 225)
 
 
-## WRITE FASTA FILES FOR EACH GENE
-string <- "atcg-N"
-
+#### WRITE FASTA FILES FOR EACH GENE ################################################ 
 ## Function to reverse and complement DNA sequence
-reverse_comp_dna <- function(string)
-{
+reverse_comp_dna <- function(string){
   # split string by characters
   string_split <-  strsplit(string, split = "")
   # reverse order
@@ -170,8 +167,7 @@ reverse_comp_dna <- function(string)
   return(paste(comp_rev_string, collapse = ""))
 } 
 
-
-## Change genome names
+  ## Change genome names
 alg$nam <- str_replace(alg$nam, "snippy_out_LO_ctg_", "")
 alg$nam <- str_replace(alg$nam, "_s25", "")
 
@@ -179,7 +175,6 @@ alg$nam <- str_replace(alg$nam, "_s25", "")
 analysis.genomes <- which(alg$nam %in% unique(gaps.df$genome))
 analysis.genomes <- c(20, analysis.genomes[-18]) # reorder, so that reference genome, PH2015_09S_Oscillatoriales_45_247, is at the top of each fasta file
 
-#file.remove(file.path(dir_output_snippy, "gene_fasta_files"))
 for(row in seq(1:nrow(gff.subset))){
   svMisc::progress(row, max.value= nrow(gff.subset), progress.bar = TRUE)
 
@@ -195,31 +190,32 @@ for(row in seq(1:nrow(gff.subset))){
     ## Extract gene from genome
     gene <- str_sub(seq, start= pull(gff.subset[row, "start"]), end= pull(gff.subset[row, "end"]))
     gene.name <- gff.subset[row, "geneID"]
+    gene.strand <- gff.subset[row, "strand"]
 
     # Gene on reverse strand, reverse sequence and change to complement nucleotides
     if(gff.subset[row, "strand"] == "-"){
       gene <- reverse_comp_dna(gene)
     }
-    
     ## Calculate gap and N fraction
     gap.count <- str_count(gene, "-")
     n.count <- str_count(gene, "n")
+    
     ## Proportion of valid sites
     prop.valid.sites <- 1 - round((gap.count + n.count) / str_length(gene), 5)
 
-
-    ## Add sequence to list, IF gaps are <25% of gene length
+    ## Add sequence to list, IF valid sites are >75% of gene length
     if(prop.valid.sites >= valid.sites.threshold){
       gene.list[counter] <- gene
       names(gene.list)[counter] <- genome.name
     }
     counter <- counter + 1
   }
+  
   ## Remove list elements that did not meet the gap threshold
   gene.list <- gene.list[!is.na(names(gene.list))]
 
   ## Write fasta including all genomes for each gene
-  write.fasta(gene.list, file.out= file.path(dir_output_snippy, "gene_ggkbase_fasta_files", str_c(gene.name, ".fa")), names= names(gene.list), nbchar= 80, as.string= TRUE)
+  write.fasta(gene.list, file.out= file.path(dir_output_snippy, "gene_ggkbase_fasta_files", str_c(gene.name,"_", gene.strand, ".fa")), names= names(gene.list), nbchar= 80, as.string= TRUE)
  rm(seq, gene, genome.name, counter)
 }
 rm(analysis.genomes, gene.name, gene.list)

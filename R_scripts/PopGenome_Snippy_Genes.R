@@ -42,8 +42,6 @@ dir_output_table <- file.path("/Users","kbg","Documents","UC_Berkeley","CyanoMet
 ## Read in alignment of the genes
 mydata2 <- readData(path= file.path(dir_input, "gene_ggkbase_fasta_files"), format="FASTA", SNP.DATA = TRUE, big.data= TRUE)
 
-
-
 ## Start/end locations of each gene in GFF file
 
 gff <- read.delim(file.path(dir_input_annotations, "Reference_ggkbase.gff"), header=F, comment.char="#", stringsAsFactors = FALSE) %>%
@@ -93,7 +91,7 @@ populations <- list(c(individual.names[c(-10, -12, -15, -23, -24, -25, -11, -13,
 mydata2 <- set.populations(mydata2, populations, diploid= FALSE)
 
 mydata2.sum <- as.data.frame(get.sum.data(mydata2)) %>%
-                mutate(geneID= row.names(.),
+                mutate(geneID= str_replace(row.names(.), "_[+|-]$", ""),
                        prop.valid.sites= round(n.valid.sites / n.sites, 4)) %>%
                 select(geneID, everything()) %>%
                 as_tibble()
@@ -121,27 +119,27 @@ mydata2 <- F_ST.stats(mydata2, mode= "nucleotide") # this also calculates divers
 pairwise.FST <- t(mydata2@nuc.F_ST.pairwise) %>%
   as_tibble() %>%
   #select(-`pop1/pop4`, -`pop2/pop4`, -`pop3/pop4`) %>%
-  mutate(geneID= mydata2@region.names) %>%
+  mutate(geneID= str_replace(mydata2@region.names, "_[+|-]$", "")) %>%
   gather(key= pops, value= FST, `pop1/pop2`:`pop2/pop3`) %>%
   arrange(geneID)
 
 # Extract nucleotide diversity between and within populations
 nucdiv.btw <- t(mydata2@nuc.diversity.between / mydata2.sum$n.sites) %>%
   as_tibble() %>%
-  mutate(geneID= mydata2@region.names) %>%
+  mutate(geneID= str_replace(mydata2@region.names, "_[+|-]$", "")) %>%
   gather(key= pops, value= nuc.btw.div, `pop1/pop2`:`pop2/pop3`)%>%
   arrange(geneID)
 
 nucdiv.within <- (mydata2@nuc.diversity.within / mydata2.sum$n.sites) %>%
   as_tibble() %>%
-  mutate(geneID= mydata2@region.names) %>%
+  mutate(geneID= str_replace(mydata2@region.names, "_[+|-]$", "")) %>%
   gather(key= pops, value= nuc.wtn.div, `pop 1`:`pop 3`)%>%
   arrange(geneID)
 
 ## Extract Tajima D
 tajima <- mydata2@Tajima.D %>%
   as_tibble() %>%
-  mutate(geneID= mydata2@region.names) %>%
+  mutate(geneID= str_replace(mydata2@region.names, "_[+|-]$", "")) %>%
   gather(key= pops, value= tajimaD, `pop 1`:`pop 3`) %>%
   arrange(geneID)
 
@@ -203,12 +201,22 @@ tajima.outlier <- pop.stats.wtn.df %>%
   mutate(outlier= "tajima")
   write_tsv(tajima.outlier, file.path(dir_output_table, "Tajima_2.txt"))
 
+  
+ # Read in MK Test results
+ mkt <- read_tsv(file.path(dir_output_table, "MK_test_sig.txt")) %>% 
+   select(geneID, feature, pops, neutrality.index, alpha, fisher.P.value) %>% 
+   rename(attribute= feature) %>% 
+   mutate(outlier= "MKT",
+          pops= str_replace(.$pops, "\\.", "\\/"))
+ 
 outlier.master <- full_join(fst.outlier, intra.outlier) %>% 
                      full_join(., inter.outlier) %>% 
-                     full_join(., tajima.outlier)
+                     full_join(., tajima.outlier) %>% 
+                     full_join(., mkt) %>% 
+                     select(geneID, attribute, outlier, pops, everything()) %>% 
+                     arrange(geneID)
 write_tsv(outlier.master, file.path(dir_output_table, "PopGenome_outlier_genes.txt"))
-    
-  
+
 ##### PLOTTING PARAMETERS ######################################################
 y.intercept <- geom_hline(yintercept = 0, color= "black", size= 0.25)
 scaffold.breaks <-   geom_vline(data= scaff.breaks.btw, aes(xintercept= end_scaf), size= 0.2, alpha= 0.5, color= "gray50")
@@ -276,7 +284,7 @@ ggplot(data= pop.stats.btw.df) +
 #   theme_popgenome
 
 ggplot(data= pop.stats.btw.df) +
-  scaffold.breaks +
+  #scaffold.breaks +
   geom_point(aes(x= start, y= FST), size= 0.5) +
   labs(x= "Genome location (Mbp)", y= expression("F"[st])) +
   x.axis.format.bp +
@@ -307,7 +315,7 @@ ggsave(last_plot(), file= "Fst_genes_boxplot.pdf", width= 8, height= 6, units= "
 #   theme_popgenome
 
 ggplot(data= pop.stats.btw.df) +
-  scaffold.breaks +
+  #scaffold.breaks +
   geom_point(aes(x= start, y= nuc.btw.div), size= 0.5) +
   labs(x= "Genome location (Mbp)", y= expression(paste("Inter-species nucleotide diversity (D"[x][y],")"))) +
   x.axis.format.bp +
@@ -320,7 +328,7 @@ ggsave(last_plot(), file= "Inter_specific_diversity_genes.pdf", width= 8, height
 ggplot(data= pop.stats.btw.df) +
   geom_boxplot(aes(x= pops, y= nuc.btw.div)) +
   labs(x= "", y= expression(paste("Inter-species nucleotide diversity (D"[x][y],")"))) +
-  scale_y_continuous(limits= c(0, 0.81), breaks= seq(0, 0.8, by= 0.1), expand= c(0, 0.01)) +
+  scale_y_continuous(limits= c(0, 0.9), breaks= seq(0, 0.9, by= 0.1), expand= c(0, 0.01)) +
   scale_x_discrete(labels= c("Species 1 & 2", "Species 1 & 3", "Species 2 & 3")) +
   scale_color_manual(values= c("gray50", "black"), name= "Polymorphic gene") +
   theme_popgenome
@@ -340,11 +348,11 @@ ggsave(last_plot(), file= "Inter_specific_diversity_genes_boxplot.pdf", width= 8
 #   theme_popgenome
 
 ggplot(data= pop.stats.wtn.df) +
-  scaffold.breaks +
+  #scaffold.breaks +
   geom_point(aes(x= start, y= nuc.wtn.div), size= 0.5) +
   labs(x= "Genome location (Mbp)", y= expression(paste("Intra-species nucleotide diversity (D"[x][y],")"))) +
   x.axis.format.bp +
-  scale_y_continuous(limits= c(0, 0.05), expand= c(0.03, 0)) +
+  scale_y_continuous(limits= c(0, 0.055), breaks= seq(0, 0.05, by= 0.01), labels= c("0.00", "", "0.02", "", "0.04", ""), expand= c(0.03, 0)) +
   scale_color_manual(values= c("gray50", "black"), name= "Polymorphic gene") +
   facet_wrap(~pops, nrow= 3, scales= "free_x", labeller= labeller(pops= pop.facet.labels)) +
   theme_popgenome
@@ -353,7 +361,7 @@ ggsave(last_plot(), file= "Intra_specific_diversity_genes.pdf", width= 8, height
 ggplot(data= pop.stats.wtn.df) +
   geom_boxplot(aes(x= pops, y= nuc.wtn.div)) +
   labs(x= "", y= expression("Intraspecific diversity ("~pi~")")) +
-  scale_y_continuous(limits= c(0, 0.05), expand= c(0.02, 0)) +
+  scale_y_continuous(limits= c(0, 0.055), expand= c(0.02, 0)) +
   scale_x_discrete(labels= c("Species 1", "Species 2", "Species 3")) +
   scale_color_manual(values= c("gray50", "black"), name= "Polymorphic gene") +
   theme_popgenome
