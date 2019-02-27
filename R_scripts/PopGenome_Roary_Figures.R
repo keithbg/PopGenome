@@ -15,9 +15,9 @@
 ## Regions are each of the nucleotide files included in the folder input into readData
 ## Populations are organisms within each data file defined to be in differen populations
 
-## Run a command such as diversity.stats(mydata2)
-## See output list contents get.diversity(mydata2)
-## See contents of each list get.diversity(mydata2)[[1]]
+## Run a command such as diversity.stats(mydata)
+## See output list contents get.diversity(mydata)
+## See contents of each list get.diversity(mydata)[[1]]
 
 #### Libraries #################################################################
 library(tidyverse)
@@ -26,203 +26,18 @@ library(ggplot2)
 ################################################################################
 
 #### FILE PATHS ################################################################
-dir_input <- file.path("/Users","kbg","Documents","UC_Berkeley","CyanoMeta_NSF","Metagenomics", "Data","GenomesData", "PopGenome", "Alignments_snippy", "Alignments_snippy_format")
+#dir_core_genes <- "/Users/kbg/Documents/UC_Berkeley/CyanoMeta_NSF/Metagenomics/Data/GenomesData/Roary/Output_PH2015_sp123_Alignment_bp90_c50/core_genome_sequences"
+dir_core_genes <- "/Users/kbg/Documents/UC_Berkeley/CyanoMeta_NSF/Metagenomics/Data/GenomesData/Roary/Output_PHall_bp95_c50/core_genome_sequences"
+dir_core_genes_sp12 <- "/Users/kbg/Documents/UC_Berkeley/CyanoMeta_NSF/Metagenomics/Data/GenomesData/Roary/Output_PHall_bp95_c50/core_genome_sequences_sp1-2"
+
 dir_input_annotations <- file.path("/Users","kbg","Documents","UC_Berkeley","CyanoMeta_NSF","Metagenomics", "Data","GenomesData", "PopGenome", "Annotations")
 dir_output_figures <- file.path("/Users","kbg","Documents","UC_Berkeley","CyanoMeta_NSF","Metagenomics", "Data","GenomesData", "PopGenome", "Output_figures")
 dir_output_table <- file.path("/Users","kbg","Documents","UC_Berkeley","CyanoMeta_NSF","Metagenomics", "Data","GenomesData", "PopGenome", "Output_tables")
 ################################################################################
 
+## Run Bash script using terminal from "core_genes_sequences" folder to format fasta headers for PopGenome
+"bash /Users/kbg/Documents/UC_Berkeley/CyanoMeta_NSF/Metagenomics/Data/GenomesData/Roary/Scripts/format_core_fasta_header.sh"
 
-
-# Whole alignment FASTA
-#mydata3 <- readData(file.path(dir_input, "snippy_LO_genome_fasta"), format= "FASTA", gffpath= file.path(dir_input, "GFF"), SNP.DATA= TRUE, big.data= TRUE, FAST= TRUE)
-#mydata2 <- readData(path= "snippy_genome_fasta", format="FASTA", SNP.DATA = TRUE, big.data= TRUE, FAST= TRUE)
-#mydata2 <- readData(path= file.path(dir_input, "gene_fasta_files"), format="FASTA", SNP.DATA = TRUE, big.data= TRUE)
-
-## Read in alignment of the genes
-mydata2 <- readData(path= file.path(dir_input, "gene_ggkbase_fasta_files"), format="FASTA", SNP.DATA = TRUE, big.data= TRUE)
-
-## Start/end locations of each gene in GFF file
-
-gff <- read.delim(file.path(dir_input_annotations, "Reference_ggkbase.gff"), header=F, comment.char="#", stringsAsFactors = FALSE) %>%
-  as_tibble() %>%
-  rename(seqid= V1, source= V2, type= V3, start= V4, end= V5, score= V6, strand= V7, phase= V8, attribute= V9) %>%
-  mutate(geneID= str_c("gene_", str_pad(seq(1:nrow(.)), pad= "0", width= 4)),
-         start= as.numeric(start),
-         end= as.numeric(end))
-
-## Gene annotations
-clean.up.annotation.regex <- " Tax.*$| tax.*$| evalue.*$| \\{.*$| \\(.*$|,.*$| bin.*$| n=."
-anno.ref <- read.delim(file.path(dir_input_annotations, "PH2015_09S_Oscillatoriales_45_247.ql"), header=F, comment.char="#", stringsAsFactors = FALSE) %>%
-             as_tibble() %>%
-             select(-V5, -V6, -V7, -V8, -V11, -V13, -V14) %>%
-             rename(attribute= V1, scaffold= V2, scaff_feature= V3, scaff_length= V4, start= V9, end= V10, annotation= V12) %>%
-             separate(annotation, into= c("uniref_all", "uniprot_all", "kegg_all"), sep= "__ ") %>%
-             mutate(uniref_anno= tolower(str_replace(.$uniref_all, clean.up.annotation.regex, "")),
-                    uniprot_anno= tolower(str_replace(.$uniprot_all, clean.up.annotation.regex, "")),
-                    kegg_anno= tolower(str_replace(.$kegg_all, clean.up.annotation.regex, ""))) %>%
-             mutate_at(vars(uniref_anno:kegg_anno), funs(trimws(., which= "both"))) %>%
-             mutate_at(vars(uniref_anno:kegg_anno), funs(str_replace_all(., "uncharacterized protein|protein of unknown function.*|putative uncharacterized.*|hypothetical protein", "unknown protein"))) %>%
-             mutate_at(vars(uniref_anno:kegg_anno), funs(ifelse(. == "tax=cg_cyano_01", NA, .))) %>%
-             mutate_at(vars(uniref_anno:kegg_anno), funs(str_replace(., " tax.*$", ""))) %>%
-             select(attribute, scaffold, uniref_anno, uniprot_anno, kegg_anno)
-
-## Scaffold lengths
-scaff.df <- read.delim(file.path(dir_input, "Reference_scaffold_lengths.gff"), header=F, comment.char="#", stringsAsFactors = FALSE) %>% 
-  as_tibble() %>% 
-  select(V9, V4, V5) %>% 
-  rename("scaffold"= V9, "start"= V4, "end"= V5) %>% 
-  mutate(scaff_length= end - start + 1)
-
-
-#### SET POPULATIONS (i.e. ANI defined species 1 to 4)
-individual.names <- sort(get.individuals(mydata2)[[4]])
-
-
-# populations <- list(c(individual.names[c(-1, -3, -12, -14, -17, -25, -26, -27, -13, -15, -16, -18, -19, -37, -53, -38, -39, -49, -48)]),
-#                     c(individual.names[c(12, 14, 17, 25, 26, 27)]),
-#                     c(individual.names[c(13, 15, 16, 18, 19, 37, 53, 38, 39, 49, 48)]),
-#                     c(individual.names[c(1, 3)]))
-
-populations <- list(c(individual.names[c(-10, -12, -15, -23, -24, -25, -11, -13, -14, -16, -17, -35, -51, -36, -37, -47, -46)]),
-                    c(individual.names[c(10, 12, 15, 23, 24, 25)]),
-                    c(individual.names[c(11, 13, 14, 16, 17, 35, 51, 36, 37, 47, 46)]))
-
-mydata2 <- set.populations(mydata2, populations, diploid= FALSE)
-
-mydata2.sum <- as.data.frame(get.sum.data(mydata2)) %>%
-                mutate(geneID= str_replace(row.names(.), "_[+|-]$", ""),
-                       prop.valid.sites= round(n.valid.sites / n.sites, 4)) %>%
-                select(geneID, everything()) %>%
-                as_tibble()
-
-
-#### CALCULATE STATISTICS ######################################################
-# show.slots(mydata2) # slots are the different type of analyses that can be conducted
-
-# Calculate Neutrality statistics
-mydata2 <- neutrality.stats(mydata2, detail= TRUE)
-#get.neutrality(mydata2)[[1]]
-# mydata2@Tajima.D
-# mydata2@n.segregating.sites
-
-# Calculate F_ST and Diversity statistics
-mydata2 <- F_ST.stats(mydata2, mode= "nucleotide") # this also calculates diversity statistics
-
-# mydata2@nucleotide.F_ST
-# mydata2@nuc.F_ST.pairwise
-# mydata2@nuc.diversity.within # same as Pi
-# mydata2@nuc.diversity.between
-# mydata2@nuc.F_ST.vs.all
-
-# Extract FST between populations
-pairwise.FST <- t(mydata2@nuc.F_ST.pairwise) %>%
-  as_tibble() %>%
-  #select(-`pop1/pop4`, -`pop2/pop4`, -`pop3/pop4`) %>%
-  mutate(geneID= str_replace(mydata2@region.names, "_[+|-]$", "")) %>%
-  gather(key= pops, value= FST, `pop1/pop2`:`pop2/pop3`) %>%
-  arrange(geneID)
-
-# Extract nucleotide diversity between and within populations
-nucdiv.btw <- t(mydata2@nuc.diversity.between / mydata2.sum$n.sites) %>%
-  as_tibble() %>%
-  mutate(geneID= str_replace(mydata2@region.names, "_[+|-]$", "")) %>%
-  gather(key= pops, value= nuc.btw.div, `pop1/pop2`:`pop2/pop3`)%>%
-  arrange(geneID)
-
-nucdiv.within <- (mydata2@nuc.diversity.within / mydata2.sum$n.sites) %>%
-  as_tibble() %>%
-  mutate(geneID= str_replace(mydata2@region.names, "_[+|-]$", "")) %>%
-  gather(key= pops, value= nuc.wtn.div, `pop 1`:`pop 3`)%>%
-  arrange(geneID)
-
-## Extract Tajima D
-tajima <- mydata2@Tajima.D %>%
-  as_tibble() %>%
-  mutate(geneID= str_replace(mydata2@region.names, "_[+|-]$", "")) %>%
-  gather(key= pops, value= tajimaD, `pop 1`:`pop 3`) %>%
-  arrange(geneID)
-
-
-#### Combine statistics into data frames
-## Remove genes with valid sites < 50% of gene length
-pop.stats.btw.df <- left_join(mydata2.sum, pairwise.FST) %>% # BETWEEN STATISTICS
-  left_join(., nucdiv.btw) %>%
-  mutate(geneID= str_replace(.$geneID, ".fa", "")) %>%
-  filter(prop.valid.sites > 0.5) %>%
-  left_join(., gff) %>%
-  left_join(., anno.ref) %>%
-  left_join(., subset(scaff.df, select= c(scaffold, scaff_length))) %>% 
-  select(geneID, attribute, scaffold, scaff_length, start, end, n.sites:nuc.btw.div, uniref_anno, uniprot_anno, kegg_anno)
-
-pop.stats.wtn.df <- left_join(mydata2.sum, nucdiv.within) %>% # WITHIN STATISTICS
-  left_join(., tajima) %>%
-  mutate(geneID= str_replace(.$geneID, ".fa", "")) %>%
-  filter(prop.valid.sites > 0.5) %>%
-  left_join(., gff) %>%
-  left_join(., anno.ref) %>%
-  left_join(., subset(scaff.df, select= c(scaffold, scaff_length))) %>% 
-  select(geneID, attribute, scaffold, scaff_length, start, end, n.sites:tajimaD, uniref_anno, uniprot_anno, kegg_anno) %>% 
-  mutate(anno= str_c(uniref_anno, uniprot_anno, kegg_anno, sep=" -- "))
-
-
-mutate(anno= str_c(uniref_anno, uniprot_anno, kegg_anno, sep=" -- ")) %>% 
-  select(attribute, anno) %>% 
-  mutate(anno = ifelse(is.na(anno), "NA -- NA -- NA", anno),
-  #rm(pairwise.FST, nucdiv.btw, nucdiv.within, tajima)
-  
-## Calculate the location of each scaffold for plotting
-scaff.breaks.btw <- pop.stats.btw.df %>% 
-  group_by(scaffold) %>% 
-  summarize(start_scaf= min(start),
-            end_scaf= max(end)) %>% 
-  arrange(start_scaf)
-
-
-
-#### EXPORT OUTLIER TABLES #############################################################
-
-# Fst
-fst.outlier <- pop.stats.btw.df %>% 
-  filter(FST < 0.5) %>% 
-  mutate(outlier= "fst")
-  write_tsv(fst.outlier, file.path(dir_output_table, "Fst_low.txt"))
-
-# Intra-specific
-intra.outlier <- pop.stats.wtn.df %>% 
-  filter(nuc.wtn.div > 0.01) %>% 
-  mutate(outlier= "intra")
-  write_tsv(intra.outlier, file.path(dir_output_table, "Intra_specific_high.txt"))
-
-# Inter-aspecific
-inter.outlier <- pop.stats.btw.df %>% 
-  filter(nuc.btw.div > 0.25) %>% 
-  mutate(outlier= "inter")
-  write_tsv(inter.outlier, file.path(dir_output_table, "Inter_specific_high.txt"))
-
-# Tajima's D
-tajima.outlier <- pop.stats.wtn.df %>% 
-  filter(tajimaD > 2 | tajimaD < -2) %>% 
-  mutate(outlier= "tajima")
-  write_tsv(tajima.outlier, file.path(dir_output_table, "Tajima_2.txt"))
-
-  
- # Read in MK Test results
- mkt <- read_tsv(file.path(dir_output_table, "MK_test_sig.txt")) %>% 
-   select(geneID, feature, pops, neutrality.index, alpha, fisher.P.value, anno) %>% 
-   rename(attribute= feature) %>% 
-   mutate(outlier= "MKT",
-          pops= str_replace(.$pops, "\\.", "\\/")) %>% 
-   separate(anno, into= c("uniref_anno", "uniprot_anno", "kegg_anno"), sep= " -- ")
-   
- 
-outlier.master <- full_join(fst.outlier, intra.outlier) %>% 
-                     full_join(., inter.outlier) %>% 
-                     full_join(., tajima.outlier) %>% 
-                     full_join(., mkt) %>% 
-                     select(geneID, attribute, outlier, pops, everything()) %>% 
-                     arrange(geneID)
-write_tsv(outlier.master, file.path(dir_output_table, "PopGenome_outlier_genes.txt"))
 
 ##### PLOTTING PARAMETERS ######################################################
 y.intercept <- geom_hline(yintercept = 0, color= "black", size= 0.25)
@@ -266,12 +81,12 @@ sum(pop.stats.btw.df$n.sites / 3)
 
 
 #### Summary plots of number of valid sites used for analyses
-ggplot(data= mydata2.sum) +
+ggplot(data= mydata.sum) +
   geom_histogram(aes(x= n.biallelic.sites), binwidth= 5, fill= "gray75", color= "black") +
   scale_y_log10(limits= c(0.95, 100), expand= c(0, 0)) +
   theme_popgenome
 
-ggplot(data= mydata2.sum) +
+ggplot(data= mydata.sum) +
   geom_histogram(aes(x= prop.valid.sites), binwidth= 0.01, fill= "gray75", color= "black") +
   theme_popgenome
 
@@ -281,14 +96,16 @@ ggplot(data= pop.stats.btw.df) +
 
 
 ## Fst
-# ggplot(data= pop.stats.btw.df) +
-#   geom_point(aes(x= geneID, y= FST), size= 0.5) +
-#   labs(x= "Gene count", y= expression("F"[st])) +
-#   x.axis.format +
-#   scale_y_continuous(limits= c(0, 1), expand= c(0.04, 0)) +
-#   scale_color_manual(values= c("gray50", "black"), name= "Polymorphic gene") +
-#   facet_wrap(~pops, nrow= 3, labeller= labeller(pops= pop.comp.facet.labels)) +
-#   theme_popgenome
+ggplot(data= pop.stats.btw.df) +
+  geom_point(aes(x= geneID, y= FST), size= 0.5) +
+  labs(x= "Gene count", y= expression("F"[st])) +
+  #x.axis.format +
+  scale_x_discrete(labels= NULL) +
+  scale_y_continuous(limits= c(0, 1), expand= c(0.04, 0)) +
+  #scale_color_manual(values= c("gray50", "black"), name= "Polymorphic gene") +
+  facet_grid(pops~.) +
+  #facet_wrap(~pops, nrow= 3, labeller= labeller(pops= pop.comp.facet.labels)) +
+  theme_popgenome
 
 ggplot(data= pop.stats.btw.df) +
   #scaffold.breaks +
