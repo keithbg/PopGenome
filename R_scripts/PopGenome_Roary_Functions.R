@@ -8,7 +8,7 @@
 ## biotite location: /data5/eelriver/CYA2/PH2017/snippy/snippy_out_contigs
 
 
-#### POP GENOME INFORMATION ####################################################
+#### POP GENOME INFORMATION 
 
 ## Valid sites in the alignment= sites without a gap or N, these sites are excluded from calculations
 
@@ -20,15 +20,132 @@
 ## See contents of each list get.diversity(mydata)[[1]]
 
 
-run_PopGenome<- function(gene_path, pops= c(1, 2, 3), prop_valid_sites= 0.5, export_tables= FALSE){
+#### EXTRACT CORE GENOME ALIGNMENTS FROM ROARY OUTPUT #########################
 
-  require(tidyverse)
-  require(PopGenome)
+## Extract the gene alignments of the core genes from the Roary output
+## Must run Roary with the -z flag: "don't delete intermediate files"
+
+## Gene alignments are in "pan_genome_sequences" folder
+
+## path= folder of Roary Output
+## core.prop= Proportion of genomes with gene to be considered core (0-1)
+# 
+extract_core_aln <- function(roary_path, core_prop){
+  suppressMessages(require(tidyverse))
   
+  if(core_prop > 1){
+    stop("core_prop must be between 0 and 1")
+  }
+  
+  ## Read in gene presence/absence table
+  gene.df <- suppressMessages(read_tsv(file.path(roary_path, "gene_presence_absence.Rtab"))) %>%
+    mutate(gene_counts= rowSums(.[, -1]))
+  
+  ## Count genomes in table
+  genome.count <- sum(str_detect(names(gene.df), "PH"))
+  
+  ## Filter genes in the core
+  gene.core <- gene.df %>%
+    filter(gene_counts >= ceiling(genome.count * core_prop)) ## Proportion of genomes considered to be core
+  
+  core.genes <- gene.core %>%
+    select(Gene) %>%
+    pull()
+  
+  ## List gene alignment sequences output by Roary
+  gene.sequences <- list.files(file.path(roary_path, "pan_genome_sequences"))
+  
+  ## Subset the core sequences
+  core.sequences <- gene.sequences[str_replace(gene.sequences, ".fa.aln", "") %in% core.genes]
+  
+  ## Move the core sequences to a new folder, "core_genome_sequences"
+  if(dir.exists(file.path(roary_path, "core_genome_sequences")) == TRUE){
+    unlink(file.path(roary_path, "core_genome_sequences"), recursive = TRUE)
+  }
+  
+  dir.create(file.path(roary_path, "core_genome_sequences"))
+  file.copy(from= file.path(roary_path, "pan_genome_sequences", core.sequences),
+            to= file.path(roary_path, "core_genome_sequences"))
+  
+  return(gene.core)
+}
+
+
+
+
+#### CHECK SEQUENCES TO MAKE SURE DIVISIBLE BY 3
+## PopGenome throws an error if sequence lengths are not divisible by 3
+## This script will trim the last 1 or 2 nucleotides from a sequence
+## to make the length divisible by 3
+
+trim_seq_length <- function(core_genes_path, trim_seq= FALSE){
+  gene_list <- list.files(core_genes_path)
+  
+  gene_length_df <- data.frame(geneID= rep(NA, length(gene_list)), 
+                               gene_count= rep(NA, length(gene_list)), 
+                               gene_length= rep(NA, length(gene_list)), 
+                               div3= rep(NA, length(gene_list)))
+  
+  for(i in seq(1, length(gene_list))){
+    
+    seq <- read.fasta(file.path(core_genes_path, gene_list[i]))
+    seq_length <- getLength(seq)
+    seq_num <- length(seq_length)
+    div3 <- sum(seq_length %% 3) / seq_num # The %% operator returns the remainder of the division
+    
+    gene_length_df[i, ] <- c(gene_list[i], seq_num, seq_length[1], div3)
+  }
+  
+  gene_length_df <- gene_length_df %>% 
+    as_tibble() %>% 
+    mutate_at(vars(gene_count:div3), funs(as.numeric))
+  
+  ## Trim sequences and write new fasta file
+  if(trim_seq== TRUE){
+    message("Moving original long fasta files to ", file.path(str_replace("../Roary/Output_PHall_bp90_c90/core_genome_sequences", "\\/[^\\/]*$", ""), "core_long_seqs"))
+    message("Writing new fasta files")
+    
+    dir.create(file.path(str_replace("../Roary/Output_PHall_bp90_c90/core_genome_sequences", "\\/[^\\/]*$", ""), "core_long_seqs"))
+    
+    trim_seqs <- gene_length_df %>% 
+      filter(div3 != 0)
+    
+    for(i in seq(1, nrow(trim_seqs))){
+      gene_name <- pull(trim_seqs[i, "geneID"])
+      seq <- read.fasta(file.path(dir_core_genes, gene_name))
+      trim_length <- pull(trim_seqs[i, "div3"]) # either 1 or 2
+      gene_length <- pull(trim_seqs[i, "gene_length"])
+      
+      # Trim sequence by 1 or 2 nucleotides
+      seq_frag <- getFrag(seq, begin= 1, end= gene_length - trim_length)
+      
+      ## Move original file to new folder
+      file.rename(from= file.path(core_genes_path, gene_name),
+                  to= file.path(str_replace("../Roary/Output_PHall_bp90_c90/core_genome_sequences", "\\/[^\\/]*$", ""), "core_long_seqs", paste0("orig_", gene_name)))
+      
+      # Write fasta file of trimmed sequence to original core_genomes folder
+      write.fasta(sequences= seq_frag, names= names(seq), file.out = file.path(core_genes_path, gene_name))
+    }
+  }
+
+  return(gene_length_df)
+}
+
+
+#### RUN POPGENOME AND CALCULATE POPULATION STATISTICS
+## gene_path= folder where .aln files are located from Roary otput
+## pops= which of the caynobacterial populations are included in the analysis, should be a vector
+## prop_valid_sites= proportion of non-gaps n
+
+run_PopGenome <- function(gene_path, pops= c(1, 2, 3), prop_valid_sites= 0.5, export_tables= FALSE){
+  suppressMessages(require(tidyverse))
+  suppressMessages(require(PopGenome))
+
+   
   # Whole alignment FASTA
 ## Read in alignment of the genes
   message("Reading in fasta files to PopGenome")
-mydata <- readData(path= gene_path, format="FASTA", SNP.DATA = TRUE, big.data= TRUE)
+  mydata <- readData(path= gene_path, format="FASTA", SNP.DATA = FALSE, big.data= TRUE)
 
 
 #### SET POPULATIONS (i.e. ANI defined species 1 to 4)
@@ -224,106 +341,59 @@ return(output_list)
 }
 
 
-test <- run_PopGenome(gene_path = dir_core_genes_sp12, pops= c(1, 2))
-
-names(test)
-
-
-head(test[["mydata.sum"]])
-mkt.test <- test[["mkt.df"]]
 
 
 
 
-#### EXTRACT CORE GENOME ALIGNMENTS FROM ROARY OUTPUT #########################
-
-## Extract the gene alignments of the core genes from the Roary output
-## Must run Roary with the -z flag: "don't delete intermediate files"
-
-## Gene alignments are in "pan_genome_sequences" folder
-
-## path= folder of Roary Output
-## core.prop= Proportion of genomes with gene to be considered core (0-1)
-
-extract_core_aln <- function(roary.path, core.prop){
-  require(tidyverse)
+get_genes_by_species <- function(gene_presence_absence){
+  message("function takes the gene_presence_absence.Rtab matrix from Roary\n or the output from extract_core_aln")
   
-  ## Read in gene presence/absence table
-  gene.df <- read_tsv(file.path(roary.path, "gene_presence_absence.Rtab")) %>% 
-    mutate(gene_counts= rowSums(.[, -1]))
+  genome_species <- suppressMessages(read_tsv("/Users/kbg/Documents/UC_Berkeley/CyanoMeta_NSF/Metagenomics/Data/GenomesData/genome_ani_species.tsv"))
+  gene_occurrence <- tibble(Gene= core_genes$Gene)
   
-  ## Count genomes in table
-  genome.count <- sum(str_detect(names(gene.df), "PH"))
+  species=2
+  for(species in 1:3){
+    sp_list <- genome_species %>%
+      filter(ani_species == species)
+    sp_genomes <- names(core_genes)[names(core_genes) %in% sp_list$genome]
+    
+    var_count <- paste0("gene_count_sp", species)
+    var_prop <- paste0("gene_prop_sp", species)
+    
+    sp_genes <- core_genes %>%
+      select(Gene, sp_genomes) %>%
+      mutate(!!var_count := rowSums(.[, -1]),
+             !!var_prop := rowSums(.[, -1]) / length(sp_genomes)) %>% 
+      select(-contains("PH"))
+    
+    gene_occurrence <- left_join(gene_occurrence, sp_genes, by= "Gene")
+    
+  }
   
-  ## Filter genes in the core
-  gene.core <- gene.df %>% 
-    filter(gene_counts >= ceiling(genome.count * core.prop)) ## Proportion of genomes considered to be core
-  
-  core.genes <- gene.core %>% 
-    select(Gene) %>%
-    pull()
-  
-  ## List gene alignment sequences output by Roary
-  gene.sequences <- list.files(file.path(roary.path, "pan_genome_sequences"))
-  
-  ## Subset the core sequences
-  core.sequences <- gene.sequences[str_replace(gene.sequences, ".fa.aln", "") %in% core.genes]
-  
-  ## Move the core sequences to a new folder, "core_genome_sequences"
-  dir.create(file.path(roary.path, "core_genome_sequences"))
-  file.copy(from= file.path(roary.path, "pan_genome_sequences", core.sequences),
-            to= file.path(roary.path, "core_genome_sequences"))
-  
-  return(gene.core)
+  return(gene_occurrence)
 }
 
+atest <- get_genes_by_species(gene_presence_absence = core_genes)
 
-getwd()
-core_genes <- extract_core_aln(roary.path= "Output_PHall_bp95_c50", core.prop = 0.2)
-
-
-genome_species <- read_tsv("/Users/kbg/Documents/UC_Berkeley/CyanoMeta_NSF/Metagenomics/Data/GenomesData/genome_ani_species.tsv")
-
-core_list <- list()
-
-for(species in 1:3){
-  sp_list <- genome_species %>% 
-    filter(ani_species == species)
-  sp_genomes <- names(core_genes)[names(core_genes) %in% sp_list$genome]
-  
-  sp_genes <- core_genes %>% 
-    select(Gene, sp_genomes) %>% 
-    mutate(gene_counts= rowSums(.[, -1]))
-  
-  sp_core_genes <- sp_genes %>% 
-    filter(gene_counts >= ceiling(length(sp_genomes) * 0.5))
-  
-  core_list[[species]] <- sp_core_genes
-  
-  if(species == 3){
-    names(core_list) <- c("sp1", "sp2", "sp3")  
-  }
-}  
-
-
-## Find overlapping gene names in each of the 3 species
-table(core_list[["sp1"]]$Gene %in% core_list[["sp2"]]$Gene)
-table(core_list[["sp1"]]$Gene %in% core_list[["sp3"]]$Gene)
-table(core_list[["sp2"]]$Gene %in% core_list[["sp3"]]$Gene)
-
-
-core_genes_A <- core_list[["sp1"]]$Gene[core_list[["sp1"]]$Gene %in% core_list[["sp2"]]$Gene]
-
-
-
-dir.create(file.path(roary.path, "core_genome_sequences_sp1-2"))
-file.copy(from= file.path(roary.path, "core_genome_sequences", paste0(core_genes_A, ".fa.aln")),
-          to= file.path(roary.path, "core_genome_sequences_sp1-2"))
-
-core_genes_B <- core_genes_A[core_genes_A %in% core_list[["sp3"]]$Gene]
-
-
-
-
-
-
+# 
+# # ## Find overlapping gene names in each of the 3 species
+# # table(core_list[["sp1"]]$Gene %in% core_list[["sp2"]]$Gene)
+# # table(core_list[["sp1"]]$Gene %in% core_list[["sp3"]]$Gene)
+# # table(core_list[["sp2"]]$Gene %in% core_list[["sp3"]]$Gene)
+# # 
+# # 
+# # core_genes_A <- core_list[["sp1"]]$Gene[core_list[["sp1"]]$Gene %in% core_list[["sp2"]]$Gene]
+# # 
+# # 
+# # 
+# # dir.create(file.path(roary.path, "core_genome_sequences_sp1-2"))
+# # file.copy(from= file.path(roary.path, "core_genome_sequences", paste0(core_genes_A, ".fa.aln")),
+# #           to= file.path(roary.path, "core_genome_sequences_sp1-2"))
+# # 
+# # core_genes_B <- core_genes_A[core_genes_A %in% core_list[["sp3"]]$Gene]
+# 
+# 
+# 
+# 
+# 
+# 
