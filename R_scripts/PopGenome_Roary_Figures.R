@@ -23,67 +23,88 @@
 library(tidyverse)
 library(PopGenome)
 library(ggplot2)
+library(ggExtra)
 source("R_scripts/PopGenome_Roary_Functions.R")
 
 #### FILE PATHS ################################################################
-#dir_core_genes <- "/Users/kbg/Documents/UC_Berkeley/CyanoMeta_NSF/Metagenomics/Data/GenomesData/Roary/Output_PH2015_sp123_Alignment_bp90_c50/core_genome_sequences"
 dir_roary <- "../Roary/Output_PHall_bp90_c90"
 dir_core_genes <- "../Roary/Output_PHall_bp90_c90/core_genome_sequences"
-dir_core_genes_sp12 <- "../Roary/Output_PHall_bp90_c90/core_genome_sequences_sp1-2"
+dir_out_table <- "Output_tables"
+dir_out_figs <- "Output_figures"
 
-dir_input_annotations <- file.path("/Users","kbg","Documents","UC_Berkeley","CyanoMeta_NSF","Metagenomics", "Data","GenomesData", "PopGenome", "Annotations")
-dir_output_figures <- file.path("/Users","kbg","Documents","UC_Berkeley","CyanoMeta_NSF","Metagenomics", "Data","GenomesData", "PopGenome", "Output_figures")
-dir_output_table <- file.path("/Users","kbg","Documents","UC_Berkeley","CyanoMeta_NSF","Metagenomics", "Data","GenomesData", "PopGenome", "Output_tables")
+# dir_output_figures <- file.path("/Users","kbg","Documents","UC_Berkeley","CyanoMeta_NSF","Metagenomics", "Data","GenomesData", "PopGenome", "Output_figures")
+# dir_output_table <- file.path("/Users","kbg","Documents","UC_Berkeley","CyanoMeta_NSF","Metagenomics", "Data","GenomesData", "PopGenome", "Output_tables")
 
 
-## Run Bash script using terminal from "core_genes_sequences" folder to format fasta headers for PopGenome
-"bash /Users/kbg/Documents/UC_Berkeley/CyanoMeta_NSF/Metagenomics/Data/GenomesData/Roary/Scripts/format_core_fasta_header.sh"
-
-## Extract core genes
-core_genes <- extract_core_aln(roary_path= dir_roary, core_prop= 0.2)
+## Extract core genes and put in "core_genomes_sequences" folder
+#core_genes <- extract_core_aln(roary_path= dir_roary, core_prop= 0.2, move_files = TRUE)
+core_genes <- extract_core_aln(roary_path= dir_roary, core_prop= 0.2, move_files = FALSE)
 
 
 ## Run Bash script using terminal from "core_genes_sequences" folder to format fasta headers for PopGenome
 "cd /Users/kbg/Documents/UC_Berkeley/CyanoMeta_NSF/Metagenomics/Data/GenomesData/Roary/Output_PHall_bp90_c90/core_genome_sequences"
 "bash /Users/kbg/Documents/UC_Berkeley/CyanoMeta_NSF/Metagenomics/Data/GenomesData/Roary/Scripts/format_core_fasta_header.sh"
 
-
 ## Trim sequences that are not divisible by 3 (i.e. 3 nucleotides in a codon)
-long_seqs <- trim_seq_length(core_genes_path, trim_seq= TRUE)
+long_seqs <- trim_seq_length(core_genes_path= dir_core_genes, trim_seq= TRUE)
 
 
 ## Run PopGenome
 # prop_valid_sites= 0.5, export_tables= FALSE
 pg.list <- run_PopGenome(gene_path = dir_core_genes, pops= c(1, 2, 3))
-pg.btw <- pg.list[["pop.stats.btw.df"]]
-pg.wtn <- pg.list[["pop.stats.wtn.df"]]
-pg.object <- pg.list[["mydata"]]
-
 #saveRDS(pg.list, file= "pg.list.RDS") # save as RDS so I don't have to run popgenome again next time
 #pg.list <- readRDS("pg.list.RDS")
 
-pg.object@region.names[1]
-pg.object@region.data@biallelic.sites[[1]]
+pg.btw <- pg.list[["pop.stats.btw.df"]]
+pg.wtn <- pg.list[["pop.stats.wtn.df"]]
+#pg.object <- pg.list[["mydata"]]
+
+
+#pg.object@region.names[1]
+#pg.object@region.data@biallelic.sites[[1]]
 # pg.object@region.stats@biallelic.structure[[1]]["POP"]
 # pg.object@region.stats@biallelic.structure[[1]]["POP"][[1]][2, ]
 
 ## Identify genes not present in all genomes
 gene_pa <- get_genes_by_species(gene_presence_absence = core_genes)
 
-## Reformat to make compatible with PopGenome Output
-gene_props <- gene_pa %>% 
-  gather(key= pops, value= prop, contains("prop")) %>% 
-  arrange(Gene) %>% 
-  mutate(pops= ifelse(pops == "gene_prop_sp1", "pop 1",
-                      ifelse(pops == "gene_prop_sp2", "pop 2", "pop 3"))) %>% 
-  select(-contains("count")) %>% 
-  rename(geneID= Gene)
 
-## Filter by proportion of genomes the gene is within
-gp_filt <- gene_props %>% 
-  filter(prop > 0.5)
+## Filter by proportion of genomes within a species the gene is within
+## Gene must be in at least 50% of genomes in a species to be considered for within species statistics
+pg.wtn.filt <- inner_join(pg.wtn, filter(gene_pa, prop > 0.5), by= c("geneID", "pops"))
 
-pg.wtn.filt <- inner_join(pg.wtn, gp_filt, by= c("geneID", "pops"))
+
+## Genes must be in at least 50% of each species for all between species comparisons
+genes.btw <- pg.wtn.filt %>% 
+  group_by(geneID) %>% 
+  summarize(pop1= any(str_detect(pops, "pop 1")),
+            pop2= any(str_detect(pops, "pop 2")),
+            pop3= any(str_detect(pops, "pop 3"))) %>% 
+  ungroup() %>% 
+  group_by(geneID) %>% 
+  mutate(`pop1/pop2`= all(pop1, pop2),
+        `pop1/pop3`= all(pop1, pop3),
+         `pop2/pop3`= all(pop2, pop3)) %>% 
+  select(geneID, `pop1/pop2`, `pop1/pop3`, `pop2/pop3`) %>% 
+  gather(key= pops, value= present, `pop1/pop2`:`pop2/pop3`) %>% 
+  filter(present == TRUE) %>% 
+  select(geneID, pops)
+
+pg.btw.filt <- inner_join(pg.btw, genes.btw, by= c("geneID", "pops"))
+
+
+## Write output tables of filtered genes (including gene annotations from Roary (i.e. Prokka))
+
+gene_annotations <- read_csv(file.path(dir_roary, "gene_presence_absence.csv")) %>%
+  select(Gene, Annotation) %>% 
+  rename(geneID= Gene, annotation= Annotation)
+
+left_join(pg.wtn.filt, gene_annotations, by= "geneID") %>% 
+  write_tsv(path= file.path(dir_out_table, "PopGenome_wtn_filt.tsv"))
+
+left_join(pg.btw.filt, gene_annotations, by= "geneID") %>% 
+  write_tsv(path= file.path(dir_out_table, "PopGenome_btw_filt.tsv"))
+
 
 ##### PLOTTING PARAMETERS ######################################################
 y.intercept <- geom_hline(yintercept = 0, color= "black", size= 0.25)
@@ -142,28 +163,35 @@ ggplot(data= pg.btw) +
 
 
 ## Fst
-ggplot(data= pg.btw) +
+ggplot(data= pg.btw.filt) +
   geom_point(aes(x= geneID, y= FST), size= 0.5) +
   labs(x= "Gene count", y= expression("F"[st])) +
   #x.axis.format +
-  scale_x_discrete(labels= NULL) +
+  scale_x_discrete(labels= NULL, breaks= NULL) +
   scale_y_continuous(limits= c(0, 1), expand= c(0.04, 0)) +
-  #scale_color_manual(values= c("gray50", "black"), name= "Polymorphic gene") +
-  facet_grid(pops~.) +
-  #facet_wrap(~pops, nrow= 3, labeller= labeller(pops= pop.comp.facet.labels)) +
+  facet_wrap(~pops, nrow= 3, labeller= labeller(pops= pop.comp.facet.labels)) +
   theme_popgenome
-
-
 ggsave(last_plot(), file= "Fst_genes.pdf", width= 8, height= 6, units= "in", path= file.path(dir_output_figures, "genes_alignment"))
 
-ggplot(data= pg.btw) +
+ggplot(data= pg.btw.filt) +
   geom_boxplot(aes(x= pops, y= FST)) +
   labs(x= "", y= expression("F"[st])) +
   scale_y_continuous(limits= c(0, 1), expand= c(0.01, 0)) +
   scale_x_discrete(labels= c("Species 1 & 2", "Species 1 & 3", "Species 2 & 3")) +
   theme_popgenome
-ggsave(last_plot(), file= "Fst_genes_boxplot.pdf", width= 8, height= 6, units= "in", path= file.path(dir_output_figures, "genes_alignment"))
+#ggsave(last_plot(), file= "Fst_genes_boxplot.pdf", width= 8, height= 6, units= "in", path= file.path(dir_output_figures, "genes_alignment"))
 
+ggplot(data= pg.btw.filt) +
+  geom_histogram(aes(x= FST), binwidth = 0.01, color= "black", fill= "gray50") +
+  #geom_density(aes(x= FST)) +
+ # labs(y= "Count", x= expression("F"[st])) +
+  #scale_x_continuous(limits= c(0, 1), expand= c(0.01, 0)) +
+  #facet_grid(pops~., scales= "free_y", labeller= labeller(pops= pop.comp.facet.labels)) +
+  scale_y_log10() +
+  facet_grid(pops~., scales= "free_y") +
+  theme_popgenome
+
+?geom_density
 
 ## Nucleotide diversity BETWEEN species
 # ggplot(data= pg.btw) +
@@ -209,26 +237,39 @@ ggsave(last_plot(), file= "Inter_specific_diversity_genes_boxplot.pdf", width= 8
 #   facet_wrap(~pops, nrow= 3, labeller= labeller(pops= pop.facet.labels)) +
 #   theme_popgenome
 
-ggplot(data= pg.wtn2) +
+ggplot(data= filter(pg.wtn.filt, pops == "pop 1")) +
   #scaffold.breaks +
-  geom_point(aes(x= geneID, y= nuc.wtn.div), size= 0.5) +
-  labs(x= "Genome location (Mbp)", y= expression(paste("Intra-species nucleotide diversity (D"[x][y],")"))) +
+  geom_point(aes(x= reorder(geneID, -nuc.wtn.div), y= nuc.wtn.div), size= 0.5) +
+  labs(x= "", y= expression("Intraspecific diversity ("~pi~")")) +
   #x.axis.format.bp +
   scale_x_discrete(labels= NULL) +
   #scale_y_continuous(limits= c(0, 0.055), breaks= seq(0, 0.05, by= 0.01), labels= c("0.00", "", "0.02", "", "0.04", ""), expand= c(0.03, 0)) +
-  #scale_color_manual(values= c("gray50", "black"), name= "Polymorphic gene") +
   facet_wrap(~pops, nrow= 3, scales= "free_x", labeller= labeller(pops= pop.facet.labels)) +
   theme_popgenome
-ggsave(last_plot(), file= "Intra_specific_diversity_genes.pdf", width= 8, height= 6, units= "in", path= file.path(dir_output_figures, "genes_alignment"))
 
-ggplot(data= pg.wtn) +
-  geom_boxplot(aes(x= pops, y= nuc.wtn.div)) +
+
+ggplot(data= pg.wtn.filt) +
+  #scaffold.breaks +
+  geom_point(aes(x= reorder(geneID, -nuc.wtn.div), y= nuc.wtn.div), size= 0.5) +
   labs(x= "", y= expression("Intraspecific diversity ("~pi~")")) +
-  scale_y_continuous(limits= c(0, 0.055), expand= c(0.02, 0)) +
-  scale_x_discrete(labels= c("Species 1", "Species 2", "Species 3")) +
-  scale_color_manual(values= c("gray50", "black"), name= "Polymorphic gene") +
+  #x.axis.format.bp +
+  scale_x_discrete(labels= NULL) +
+  #scale_y_continuous(limits= c(0, 0.055), breaks= seq(0, 0.05, by= 0.01), labels= c("0.00", "", "0.02", "", "0.04", ""), expand= c(0.03, 0)) +
+  facet_wrap(~pops, nrow= 3, scales= "free_x", labeller= labeller(pops= pop.facet.labels)) +
   theme_popgenome
-ggsave(last_plot(), file= "Intra_specific_diversity_genes_boxplot.pdf", width= 8, height= 6, units= "in", path= file.path(dir_output_figures, "genes_alignment"))
+
+
+
+
+#ggsave(last_plot(), file= "Intra_specific_diversity_genes.pdf", width= 8, height= 6, units= "in", path= file.path(dir_output_figures, "genes_alignment"))
+
+# ggplot(data= pg.wtn) +
+#   geom_boxplot(aes(x= pops, y= nuc.wtn.div)) +
+#   labs(x= "", y= expression("Intraspecific diversity ("~pi~")")) +
+#   scale_y_continuous(limits= c(0, 0.055), expand= c(0.02, 0)) +
+#   scale_x_discrete(labels= c("Species 1", "Species 2", "Species 3")) +
+#   theme_popgenome
+#ggsave(last_plot(), file= "Intra_specific_diversity_genes_boxplot.pdf", width= 8, height= 6, units= "in", path= file.path(dir_output_figures, "genes_alignment"))
 
 
 ## Tajima's D
