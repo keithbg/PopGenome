@@ -137,6 +137,7 @@ trim_seq_length <- function(core_genes_path, trim_seq= FALSE){
 ## gene_path= folder where .aln files are located from Roary otput
 ## pops= which of the caynobacterial populations are included in the analysis, should be a vector
 ## prop_valid_sites= proportion of non-gaps n
+## export_tables= either FALSE, or a pathway for where files should be written
 
 run_PopGenome <- function(gene_path, pops= c(1, 2, 3), prop_valid_sites= 0.5, export_tables= FALSE){
   suppressMessages(require(tidyverse))
@@ -200,13 +201,20 @@ mydata.sum <- as.data.frame(get.sum.data(mydata)) %>%
 #### CALCULATE STATISTICS 
 # show.slots(mydata) # slots are the different type of analyses that can be conducted
 message("Calculating population genetic statistics")
-# Calculate Neutrality statistics
+
+## Calculate Neutrality statistics
 mydata <- neutrality.stats(mydata, detail= TRUE)
 
-# Calculate F_ST and Diversity statistics
+## Calculate F_ST and Diversity statistics
 mydata <- F_ST.stats(mydata, mode= "nucleotide") # this also calculates diversity statistics
 
-# Extract FST between populations
+## Calculate MK Test
+mydata <- MKT(mydata, new.populations= populations,
+              do.fisher.test= TRUE,
+              fixed.threshold.fst= FALSE)
+
+
+## Extract FST between populations
 pairwise.FST <- t(mydata@nuc.F_ST.pairwise) %>%
   as_tibble() %>%
   #select(-`pop1/pop4`, -`pop2/pop4`, -`pop3/pop4`) %>%
@@ -216,7 +224,7 @@ pairwise.FST <- t(mydata@nuc.F_ST.pairwise) %>%
   arrange(geneID)
 
 
-# Extract nucleotide diversity between and within populations
+## Extract nucleotide diversity between and within populations
 nucdiv.btw <- t(mydata@nuc.diversity.between / mydata.sum$n.sites) %>%
   as_tibble() %>%
   mutate(geneID= str_replace(mydata@region.names, ".fa.aln", "")) %>%
@@ -238,12 +246,39 @@ tajima <- mydata@Tajima.D %>%
   gather(key= pops, value= tajimaD, contains("pop")) %>%
   arrange(geneID)
 
+## Extract MKT data
+format_mkt_data <- function(){
+  ## Extract results as list and add gene names
+  mkt.list <- mapply(cbind, get.MKT(mydata), mydata@region.names)
+  
+  ## Fill NULL results (where biallialec sites = 0) with a blank DF
+  null.elements <- which(do.call(rbind, lapply(get.MKT(mydata), is.null)))
+  mkt.list[null.elements] <- lapply(null.elements,
+                                    function(x)
+                                      mkt.list[x] <- cbind(matrix(NA, nrow= 3, ncol= 9), rep(mydata@region.names[x], 3))) # blank matrix of NAs, with geneID included
+  
+  ## Transform list into a dataframe
+  mkt.df <- do.call(rbind, mkt.list) %>%
+    as.data.frame() %>%
+    mutate(pops = str_replace(row.names(.), "\\.[0-9].*$", "")) %>%
+    mutate(pops = str_replace(pops, "\\.", "/")) %>% 
+    rename("geneID" = V10) %>%
+    as_tibble() %>%
+    mutate_at(vars(P1_nonsyn:fisher.P.value), funs(as.numeric(as.character(.)))) %>% 
+    mutate(geneID= as.character(.$geneID)) %>%   
+    mutate(geneID = str_replace(as.character(geneID), ".fa.aln", ""))
+  #left_join(., feature.annotation, by= "geneID") # combine with annotation information
+  return(mkt.df)
+}
+mkt.df <- format_mkt_data()
+
 
 #### Combine statistics into data frames
 ## Remove genes with valid sites < 50% of gene length
 pop.stats.btw.df <- left_join(mydata.sum, pairwise.FST) %>% # BETWEEN STATISTICS
   left_join(., nucdiv.btw) %>%
   mutate(geneID= str_replace(.$geneID, ".fa", "")) %>%
+  left_join(., mkt.df) %>%
   filter(prop.valid.sites > prop_valid_sites)
 
 
@@ -252,85 +287,12 @@ pop.stats.wtn.df <- left_join(mydata.sum, nucdiv.within) %>% # WITHIN STATISTICS
   mutate(geneID= str_replace(.$geneID, ".fa", "")) %>%
   filter(prop.valid.sites > prop_valid_sites)
 
-#### MK Test ####
-# message("calculating MK Test")
-# mydata <- MKT(mydata, new.populations= populations,
-#                  do.fisher.test= TRUE,
-#                  fixed.threshold.fst= FALSE)
-# 
-# ## Extract results as list and add gene names
-# mkt.list <- mapply(cbind, get.MKT(mydata), mydata@region.names)
-# 
-# ## Fill NULL results (where biallialec sites = 0) with a blank DF
-# null.elements <- which(do.call(rbind, lapply(get.MKT(mydata), is.null)))
-# mkt.list[null.elements] <- lapply(null.elements,
-#                                   function(x)
-#                                     mkt.list[x] <- cbind(matrix(NA, nrow= 3, ncol= 9), rep(mydata@region.names[x], 3))) # blank matrix of NAs, with geneID included
-# 
-# ## Transform list into a dataframe
-# mkt.df <- do.call(rbind, mkt.list) %>% 
-#   as.data.frame() %>% 
-#   mutate(pops = str_replace(row.names(.), "\\.[0-9].*$", "")) %>% 
-#   #rename("geneID" = V10) %>% 
-#   as_tibble() %>% 
-#   mutate_at(vars(P1_nonsyn:fisher.P.value), funs(as.numeric(as.character(.)))) %>% 
-#   #mutate(geneID = str_replace(as.character(geneID), ".fa.aln", "")) 
-#   #left_join(., feature.annotation, by= "geneID") # combine with annotation information
-# 
-# '
-## MK Test significant values p < 0.05
-# mkt.sig <- mkt.df %>% 
-#   filter(fisher.P.value < 0.05) %>% 
-#   arrange(fisher.P.value)
-# write_tsv(mkt.sig, path= file.path(export_tables, "MK_test_sig.txt"))
 
-#### EXPORT OUTLIER TABLES 
 
+#### EXPORT TABLES
 if(export_tables != FALSE){
-  message("Exporting tables")
-# Fst
-fst.outlier <- pop.stats.btw.df %>% 
-  filter(FST < 0.5) %>% 
-  mutate(outlier= "fst")
-  write_tsv(fst.outlier, file.path(export_tables, "Fst_low.txt"))
-
-# Intra-specific
-intra.outlier <- pop.stats.wtn.df %>% 
-  filter(nuc.wtn.div > 0.01) %>% 
-  mutate(outlier= "intra")
-  write_tsv(intra.outlier, file.path(export_tables, "Intra_specific_high.txt"))
-
-# Inter-specific
-inter.outlier <- pop.stats.btw.df %>% 
-  filter(nuc.btw.div > 0.25) %>% 
-  mutate(outlier= "inter")
-  write_tsv(inter.outlier, file.path(export_tables, "Inter_specific_high.txt"))
-
-# Tajima's D
-tajima.outlier <- pop.stats.wtn.df %>% 
-  filter(tajimaD > 2 | tajimaD < -2) %>% 
-  mutate(outlier= "tajima")
-  write_tsv(tajima.outlier, file.path(export_tables, "Tajima_2.txt"))
-
-  
- # Read in MK Test results
- # mkt <- read_tsv(file.path(dir_output_table, "MK_test_sig.txt")) %>% 
- #   select(geneID, feature, pops, neutrality.index, alpha, fisher.P.value, anno) %>% 
- #   rename(attribute= feature) %>% 
- #   mutate(outlier= "MKT",
- #          pops= str_replace(.$pops, "\\.", "\\/")) %>% 
- #   separate(anno, into= c("uniref_anno", "uniprot_anno", "kegg_anno"), sep= " -- ")
- 
- 
-   
- 
-outlier.master <- full_join(fst.outlier, intra.outlier) %>% 
-                     full_join(., inter.outlier) %>% 
-                     full_join(., tajima.outlier) %>% 
-                     full_join(., mkt) %>% 
-                     select(geneID, attribute, outlier, pops, everything()) %>% 
-                     arrange(geneID)
-write_tsv(outlier.master, file.path(export_tables, "PopGenome_outlier_genes.txt"))
+write_tsv(pop.stats.btw.df, path= file.path(export_tables, "PopGenome_btw.tsv"))
+write_tsv(pop.stats.wtn.df, path= file.path(export_tables, "PopGenome_wtn.tsv"))
 }
 
 
@@ -393,3 +355,52 @@ get_genes_by_species <- function(gene_presence_absence){
 }
 
 
+#### PROCESS TABLES
+
+
+
+  # message("Exporting tables")
+  # # Fst
+  # fst.outlier <- pop.stats.btw.df %>% 
+  #   filter(FST < 0.5) %>% 
+  #   mutate(outlier= "fst")
+  # write_tsv(fst.outlier, file.path(export_tables, "Fst_low.txt"))
+  # 
+  # # Intra-specific
+  # intra.outlier <- pop.stats.wtn.df %>% 
+  #   filter(nuc.wtn.div > 0.01) %>% 
+  #   mutate(outlier= "intra")
+  # write_tsv(intra.outlier, file.path(export_tables, "Intra_specific_high.txt"))
+  # 
+  # # Inter-specific
+  # inter.outlier <- pop.stats.btw.df %>% 
+  #   filter(nuc.btw.div > 0.25) %>% 
+  #   mutate(outlier= "inter")
+  # write_tsv(inter.outlier, file.path(export_tables, "Inter_specific_high.txt"))
+  # 
+  # # Tajima's D
+  # tajima.outlier <- pop.stats.wtn.df %>% 
+  #   filter(tajimaD > 2 | tajimaD < -2) %>% 
+  #   mutate(outlier= "tajima")
+  # write_tsv(tajima.outlier, file.path(export_tables, "Tajima_2.txt"))
+  # 
+  # 
+  # # Read in MK Test results
+  # # mkt <- read_tsv(file.path(dir_output_table, "MK_test_sig.txt")) %>% 
+  # #   select(geneID, feature, pops, neutrality.index, alpha, fisher.P.value, anno) %>% 
+  # #   rename(attribute= feature) %>% 
+  # #   mutate(outlier= "MKT",
+  # #          pops= str_replace(.$pops, "\\.", "\\/")) %>% 
+  # #   separate(anno, into= c("uniref_anno", "uniprot_anno", "kegg_anno"), sep= " -- ")
+  # 
+  # 
+  # 
+  # 
+  # outlier.master <- full_join(fst.outlier, intra.outlier) %>% 
+  #   full_join(., inter.outlier) %>% 
+  #   full_join(., tajima.outlier) %>% 
+  #   full_join(., mkt) %>% 
+  #   select(geneID, attribute, outlier, pops, everything()) %>% 
+  #   arrange(geneID)
+  # write_tsv(outlier.master, file.path(export_tables, "PopGenome_outlier_genes.txt"))
+  # 
